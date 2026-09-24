@@ -235,7 +235,7 @@ def main() -> None:
     <ul>
       <li><a href="https://gisdata-piercecowa.opendata.arcgis.com/" target="_blank" rel="noopener">Pierce County Open GeoSpatial Data Portal</a> - Water Quality Monitoring Sites</li>
       <li><a href="https://github.com/crikeli/pierce-stormwater-outfall-audit" target="_blank" rel="noopener">Pierce County Stormwater Outfall Audit</a> (this portfolio) - outfall risk scores used for the cross-reference</li>
-      <li><a href="../notebooks/water_quality_qa_and_change.ipynb" target="_blank" rel="noopener">Full analysis notebook</a> on GitHub</li>
+      <li><a href="https://github.com/crikeli/pierce-water-quality-trends/blob/main/notebooks/water_quality_qa_and_change.ipynb" target="_blank" rel="noopener">Full analysis notebook</a> on GitHub</li>
       <li><a href="https://github.com/crikeli/pierce-water-quality-trends" target="_blank" rel="noopener">Source code on GitHub</a></li>
     </ul>
     """
