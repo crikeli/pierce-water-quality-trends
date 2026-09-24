@@ -1,0 +1,257 @@
+"""
+Builds the published static site (docs/index.html) from the notebook's
+output: docs/water_quality_change.geojson (59 real monitoring stations,
+2023 vs 2024 WQI change, cross-referenced with the sibling outfall-audit
+project's risk scores).
+
+Tiny payload (~16KB) - loads instantly, single vector layer.
+
+Usage:
+    python build_static_site.py
+"""
+
+import os
+
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+DOCS_DIR = os.path.join(os.path.dirname(DATA_DIR), "docs")
+
+CENTER = [47.0705, -122.3680]
+
+PAGE_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pierce County Water Quality Index: QA & Change (Demo)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {{
+    --bg: #ffffff; --ink: #1a1a1a; --muted: #5b5f66; --border: #e2e4e8;
+    --surface: #f6f7f9; --accent: #1c6b7a; --decline: #b3261e; --neutral: #d9cba8; --improve: #2a7d4f;
+  }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{
+      --bg: #0e1117; --ink: #e6e8eb; --muted: #9aa1ab; --border: #2a2e35;
+      --surface: #161a21; --accent: #4fb8cc; --decline: #e8695f; --neutral: #5a4f3a; --improve: #4fbf82;
+    }}
+  }}
+  * {{ box-sizing: border-box; }}
+  html, body {{ height: 100%; margin: 0; }}
+  body {{
+    display: flex; flex-direction: column; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }}
+  header {{ padding: 16px clamp(16px, 4vw, 32px) 0; }}
+  h1 {{ margin: 0 0 4px; font-size: 1.4rem; }}
+  .caption {{ color: var(--muted); margin: 0 0 12px; font-size: 0.9rem; }}
+  .tabs {{ display: flex; gap: 20px; border-bottom: 1px solid var(--border); padding: 0 clamp(16px, 4vw, 32px); }}
+  .tab-btn {{ background: none; border: none; padding: 10px 0; font-size: 15px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }}
+  .tab-btn.active {{ color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }}
+  #tab-map {{ flex: 1 1 auto; min-height: 0; display: none; position: relative; }}
+  #tab-map.active {{ display: block; }}
+  #map {{ height: 100%; width: 100%; }}
+  #tab-about {{ display: none; padding: 16px clamp(16px, 4vw, 32px) 48px; overflow-y: auto; }}
+  #tab-about.active {{ display: block; }}
+  .controls {{
+    position: absolute; top: 12px; right: 12px; z-index: 1000; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px;
+    max-width: 260px;
+  }}
+  .legend-bar {{ height: 10px; border-radius: 3px; background: linear-gradient(to right, var(--decline), var(--neutral), var(--improve)); margin: 6px 0 2px; }}
+  .legend-labels {{ display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }}
+  .stat-row {{ display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 2px 0; }}
+  .stat-num {{ color: var(--ink); font-weight: 600; }}
+  hr.sep {{ border: none; border-top: 1px solid var(--border); margin: 10px 0; }}
+  code {{ background: var(--surface); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }}
+  a {{ color: var(--accent); }}
+  .inspect-popup {{ font-size: 12.5px; line-height: 1.6; }}
+</style>
+</head>
+<body>
+  <header>
+    <h1>Pierce County Water Quality Index: QA &amp; Change (Demo)</h1>
+    <p class="caption">Real 2023-to-2024 change at Pierce County's own water quality monitoring stations, cross-referenced with a sibling stormwater outfall audit - see the About tab for method and honest limitations.</p>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="map">Map</button>
+      <button class="tab-btn" data-tab="about">About</button>
+    </div>
+  </header>
+
+  <div id="tab-map" class="active">
+    <div id="map"></div>
+    <div class="controls">
+      <strong>WQI change, 2023 &rarr; 2024</strong>
+      <div class="legend-bar"></div>
+      <div class="legend-labels"><span>declined</span><span>improved</span></div>
+      <hr class="sep">
+      <div class="stat-row"><span>Stations compared</span><span class="stat-num">{station_count}</span></div>
+      <div class="stat-row"><span>Mean change</span><span class="stat-num">{mean_change:+.1f}</span></div>
+      <div class="stat-row"><span>Improved / declined</span><span class="stat-num">{improved_count} / {declined_count}</span></div>
+      <hr class="sep">
+      <div style="font-size:11px;color:var(--muted)">Click any station for details.</div>
+    </div>
+  </div>
+
+  <div id="tab-about">{about_html}</div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  document.querySelectorAll(".tab-btn").forEach(function (btn) {{
+    btn.addEventListener("click", function () {{
+      document.querySelectorAll(".tab-btn").forEach(function (b) {{ b.classList.remove("active"); }});
+      document.querySelectorAll("#tab-map, #tab-about").forEach(function (p) {{ p.classList.remove("active"); }});
+      btn.classList.add("active");
+      document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+      if (btn.dataset.tab === "map") {{ setTimeout(function () {{ map.invalidateSize(); }}, 50); }}
+    }});
+  }});
+
+  const CENTER = {center_json};
+  const map = L.map("map", {{ zoomSnap: 0.25 }}).setView(CENTER, 10);
+  L.control.scale({{ metric: true, imperial: true }}).addTo(map);
+
+  L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}", {{
+    maxZoom: 19,
+    attribution: "Imagery &copy; Esri &mdash; Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+  }}).addTo(map);
+
+  const rootStyle = getComputedStyle(document.documentElement);
+  const declineColor = rootStyle.getPropertyValue("--decline").trim();
+  const neutralColor = rootStyle.getPropertyValue("--neutral").trim();
+  const improveColor = rootStyle.getPropertyValue("--improve").trim();
+
+  function changeColor(v) {{
+    if (v === null || v === undefined) return "#999";
+    const t = Math.max(-1, Math.min(1, v / 20));  // +-20 pts full-scale
+    return t < 0
+      ? "rgb(" + lerp(neutralColor, declineColor, -t) + ")"
+      : "rgb(" + lerp(neutralColor, improveColor, t) + ")";
+  }}
+  function hexToRgb(hex) {{
+    const m = hex.replace("#","").match(/.{{2}}/g);
+    return m.map(function(h) {{ return parseInt(h, 16); }});
+  }}
+  function lerp(c1, c2, t) {{
+    const a = hexToRgb(c1), b = hexToRgb(c2);
+    return a.map(function(v, i) {{ return Math.round(v + t * (b[i] - v)); }}).join(",");
+  }}
+
+  fetch("water_quality_change.geojson").then(function (r) {{ return r.json(); }}).then(function (gj) {{
+    L.geoJSON(gj, {{
+      pointToLayer: function (feature, latlng) {{
+        return L.circleMarker(latlng, {{
+          radius: 8, weight: 1, color: "#333",
+          fillColor: changeColor(feature.properties.wqi_change),
+          fillOpacity: 0.9,
+        }});
+      }},
+      onEachFeature: function (feature, layer) {{
+        const p = feature.properties;
+        const rows = [
+          "<b>" + p.STATION_NAME + "</b>",
+          "2023 WQI: " + p.wqi_2023 + " &rarr; 2024 WQI: " + p.wqi_2024,
+          "Change: " + (p.wqi_change > 0 ? "+" : "") + p.wqi_change,
+          p.nearby_unconfirmed != null ? "Nearby unconfirmed outfalls (1km): " + p.nearby_unconfirmed + " of " + p.nearby_outfalls : null,
+        ].filter(Boolean).join("<br>");
+        layer.bindPopup("<div class=\\"inspect-popup\\">" + rows + "</div>");
+      }},
+    }}).addTo(map);
+  }});
+</script>
+</body>
+</html>
+"""
+
+
+def main() -> None:
+    import json
+
+    import geopandas as gpd
+
+    df = gpd.read_file(os.path.join(DOCS_DIR, "water_quality_change.geojson"))
+    station_count = len(df)
+    mean_change = df["wqi_change"].mean()
+    improved_count = int((df["wqi_change"] > 0).sum())
+    declined_count = int((df["wqi_change"] < 0).sum())
+
+    about_html = f"""
+    <h2>What this is</h2>
+    <p>Pierce County's Surface Water Management division publishes a Water
+    Quality Index (WQI, 0-100) for real monitoring stations - bacteria,
+    dissolved oxygen, pH, phosphorus, total suspended solids, temperature,
+    nitrogen, and turbidity, each converted to a sub-index and combined
+    into an overall score. This project audits that public data and
+    compares each station's real 2023 and 2024 annual scores.</p>
+
+    <h2>Two scope corrections, made before building anything further</h2>
+    <p>This started as a "multi-year trend" idea. Checking the real data
+    first showed that's not accurate - the public layer holds mostly two
+    real observation years (2023 and 2024) per station, with a handful of
+    scattered legacy rows from 2014-2018. So this is a real
+    <strong>2023-to-2024 comparison</strong>, not a multi-year trend
+    line.</p>
+    <p>Second: the parameter fields (<code>PH_ANNUAL</code>,
+    <code>DO_ANNUAL</code>, etc.) turned out to be pre-converted 0-100 WQI
+    sub-index scores, not raw pH/DO field measurements - so the QA/QC here
+    checks the index computation and publication, not raw field-instrument
+    readings against physical bounds.</p>
+
+    <h2>QA/QC findings</h2>
+    <ul>
+      <li>All sub-scores and overall scores fall within the valid [0, 100]
+      range - a real check that passed cleanly, reported as a result in
+      its own right.</li>
+      <li><code>OVERALL_ANNUAL</code> correlates with (0.83) but isn't a
+      simple average of its 8 components - it runs about 15-16 points
+      below a plain mean, consistent with standard WQI methodology
+      weighting the worst-performing parameter more heavily. Documented as
+      expected behavior, not flagged as an error.</li>
+      <li>The same real duplicate-naming issue found in this portfolio's
+      stormwater outfall-audit project reappears here on a fresh fetch:
+      the same physical station recorded under inconsistent spellings
+      (<code>CanyonFallsCreek</code> vs <code>CanyonfallsCreek</code>,
+      <code>25MileCreek</code> vs <code>Twenty-fiveMileCreek</code>) -
+      confirming it's a persistent source-data issue, not a one-time fetch
+      artifact.</li>
+    </ul>
+
+    <h2>Real 2023 &rarr; 2024 change</h2>
+    <p><strong>{station_count} stations</strong> have both years available.
+    Mean change: <strong>{mean_change:+.1f}</strong> points (essentially
+    flat citywide), with real station-to-station variation -
+    {improved_count} improved, {declined_count} declined.</p>
+
+    <h2>A real cross-project question - and an honest null result</h2>
+    <p>This portfolio's <a href="https://github.com/crikeli/pierce-stormwater-outfall-audit" target="_blank" rel="noopener">stormwater outfall audit</a>
+    scored 25,659 real outfalls for inspection priority. Cross-referencing
+    that data here asked: do water quality stations near more unconfirmed
+    outfalls show worse or more declining water quality? The correlation
+    turned out to be essentially zero (nearby unconfirmed outfall count vs
+    2024 WQI: -0.02; vs WQI change: -0.12) - a real, honest null result
+    with a modest sample (59 stations, 1km proximity window), reported as
+    such rather than reframed to look like a finding.</p>
+
+    <h2>Data sources</h2>
+    <ul>
+      <li><a href="https://gisdata-piercecowa.opendata.arcgis.com/" target="_blank" rel="noopener">Pierce County Open GeoSpatial Data Portal</a> - Water Quality Monitoring Sites</li>
+      <li><a href="https://github.com/crikeli/pierce-stormwater-outfall-audit" target="_blank" rel="noopener">Pierce County Stormwater Outfall Audit</a> (this portfolio) - outfall risk scores used for the cross-reference</li>
+      <li><a href="../notebooks/water_quality_qa_and_change.ipynb" target="_blank" rel="noopener">Full analysis notebook</a> on GitHub</li>
+      <li><a href="https://github.com/crikeli/pierce-water-quality-trends" target="_blank" rel="noopener">Source code on GitHub</a></li>
+    </ul>
+    """
+
+    page = PAGE_TEMPLATE.format(
+        about_html=about_html,
+        center_json=json.dumps(CENTER),
+        station_count=station_count,
+        mean_change=mean_change,
+        improved_count=improved_count,
+        declined_count=declined_count,
+    )
+    with open(os.path.join(DOCS_DIR, "index.html"), "w") as f:
+        f.write(page)
+    print(f"Wrote {os.path.join(DOCS_DIR, 'index.html')}")
+
+
+if __name__ == "__main__":
+    main()

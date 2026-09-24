@@ -1,0 +1,14 @@
+name: pierce-water-quality-trends
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - jupyterlab
+  - pandas
+  - geopandas
+  - numpy
+  - shapely
+  - matplotlib
+  - requests
+  - pyarrow
+  - pip
