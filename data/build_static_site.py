@@ -50,8 +50,20 @@ PAGE_TEMPLATE = """<!doctype html>
   #tab-map {{ flex: 1 1 auto; min-height: 0; display: none; position: relative; }}
   #tab-map.active {{ display: block; }}
   #map {{ height: 100%; width: 100%; }}
-  #tab-about {{ display: none; padding: 16px clamp(16px, 4vw, 32px) 48px; overflow-y: auto; }}
-  #tab-about.active {{ display: block; }}
+  #tab-about, #tab-limitations {{ display: none; padding: 16px clamp(16px, 4vw, 32px) 48px; overflow-y: auto; }}
+  #tab-about.active, #tab-limitations.active {{ display: block; }}
+  .test-card {{
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 20px; margin: 16px 0;
+  }}
+  .test-stat {{ font-size: 1.6rem; font-weight: 700; color: var(--accent); }}
+  .test-stat-label {{ font-size: 0.8rem; color: var(--muted); }}
+  .ci-row {{ display: flex; align-items: center; gap: 10px; margin: 10px 0; font-size: 0.85rem; }}
+  .ci-label {{ width: 190px; flex: none; color: var(--muted); }}
+  .ci-track {{ flex: 1; background: var(--border); border-radius: 4px; height: 20px; position: relative; }}
+  .ci-zero {{ position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); opacity: 0.4; }}
+  .ci-band {{ position: absolute; top: 3px; bottom: 3px; background: var(--accent); border-radius: 3px; opacity: 0.55; }}
+  .ci-point {{ position: absolute; top: -1px; bottom: -1px; width: 3px; background: var(--accent); }}
   .controls {{
     position: absolute; top: 12px; right: 12px; z-index: 1000; background: var(--surface);
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px;
@@ -74,6 +86,7 @@ PAGE_TEMPLATE = """<!doctype html>
     <div class="tabs">
       <button class="tab-btn active" data-tab="map">Map</button>
       <button class="tab-btn" data-tab="about">About</button>
+      <button class="tab-btn" data-tab="limitations">Limitations, Tested</button>
     </div>
   </header>
 
@@ -93,13 +106,14 @@ PAGE_TEMPLATE = """<!doctype html>
   </div>
 
   <div id="tab-about">{about_html}</div>
+  <div id="tab-limitations">{limitations_html}</div>
 
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   document.querySelectorAll(".tab-btn").forEach(function (btn) {{
     btn.addEventListener("click", function () {{
       document.querySelectorAll(".tab-btn").forEach(function (b) {{ b.classList.remove("active"); }});
-      document.querySelectorAll("#tab-map, #tab-about").forEach(function (p) {{ p.classList.remove("active"); }});
+      document.querySelectorAll("#tab-map, #tab-about, #tab-limitations").forEach(function (p) {{ p.classList.remove("active"); }});
       btn.classList.add("active");
       document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
       if (btn.dataset.tab === "map") {{ setTimeout(function () {{ map.invalidateSize(); }}, 50); }}
@@ -229,7 +243,9 @@ def main() -> None:
     turned out to be essentially zero (nearby unconfirmed outfall count vs
     2024 WQI: -0.02; vs WQI change: -0.12) - a real, honest null result
     with a modest sample (59 stations, 1km proximity window), reported as
-    such rather than reframed to look like a finding.</p>
+    such rather than reframed to look like a finding. See the
+    <strong>Limitations, Tested</strong> tab for whether that null result
+    is actually meaningful or just underpowered.</p>
 
     <h2>Data sources</h2>
     <ul>
@@ -240,8 +256,70 @@ def main() -> None:
     </ul>
     """
 
+    with open(os.path.join(DOCS_DIR, "limitations.json")) as f:
+        lim = json.load(f)
+    sig = lim["significance"]
+    min_r = lim["min_detectable_r"]
+    n_power = lim["n_power"]
+
+    def ci_bar(label, r, ci_low, ci_high):
+        def pos(v):
+            return round((max(-1, min(1, v)) + 1) / 2 * 100, 1)
+        band_left, band_right = pos(ci_low), pos(ci_high)
+        return f"""
+        <div class="ci-row">
+          <span class="ci-label">{label}</span>
+          <div class="ci-track">
+            <div class="ci-zero" style="left:{pos(0)}%"></div>
+            <div class="ci-band" style="left:{band_left}%; width:{band_right-band_left:.1f}%"></div>
+            <div class="ci-point" style="left:{pos(r)}%"></div>
+          </div>
+          <span style="width:150px;flex:none;font-size:0.8rem">r={r:+.3f} [{ci_low:+.2f}, {ci_high:+.2f}]</span>
+        </div>"""
+
+    limitations_html = f"""
+    <h2>Limitations, Tested</h2>
+    <p>The About tab reports a null result for the outfall cross-reference:
+    correlations close to zero. On its own, "close to zero" isn't a
+    complete answer - with only {n_power} stations, a real but modest
+    relationship could easily fail to reach statistical significance.
+    Testing that directly instead of just reporting the raw correlation.</p>
+
+    <h3>Is either correlation actually distinguishable from zero?</h3>
+    <div class="test-card">
+      {ci_bar("Nearby unconfirmed outfalls vs 2024 WQI", sig['wqi_2024']['r'], sig['wqi_2024']['ci_low'], sig['wqi_2024']['ci_high'])}
+      {ci_bar("...vs WQI change 2023-2024", sig['wqi_change']['r'], sig['wqi_change']['ci_low'], sig['wqi_change']['ci_high'])}
+      <p style="font-size:0.8rem;color:var(--muted);margin-top:12px">95% confidence intervals (Fisher z-transform). The vertical line marks zero - both bands cross it.</p>
+      <p style="margin-bottom:0"><strong>Honest read:</strong> neither
+      correlation is statistically distinguishable from zero (p={sig['wqi_2024']['p']:.2f}
+      and p={sig['wqi_change']['p']:.2f} respectively). Both 95% confidence
+      intervals comfortably span zero in both directions.</p>
+    </div>
+
+    <h3>Could this sample size have detected a real relationship anyway?</h3>
+    <div class="test-card">
+      <div style="display:flex;gap:32px;flex-wrap:wrap;align-items:center">
+        <div><div class="test-stat">|r| &ge; {min_r:.2f}</div><div class="test-stat-label">minimum detectable correlation at n={n_power}, &alpha;=0.05, power=80%</div></div>
+        <div><div class="test-stat">{abs(sig['wqi_change']['r']):.2f}</div><div class="test-stat-label">observed |r|, well below that threshold</div></div>
+      </div>
+      <p style="margin-bottom:0;margin-top:12px"><strong>Honest read:</strong>
+      at this sample size, only a true correlation of {min_r:.2f} or
+      stronger could have been reliably caught. The observed correlations
+      are well below that - meaning this result genuinely can't
+      distinguish "no relationship" from "a real but modest relationship
+      this sample is too small to see." That's a data limitation, not
+      evidence of no relationship, and it's the honest reason this
+      cross-reference doesn't get oversold as a finding.</p>
+    </div>
+
+    <p style="font-size:0.85rem;color:var(--muted)">Full code is in the
+    <a href="https://github.com/crikeli/pierce-water-quality-trends/blob/main/notebooks/water_quality_qa_and_change.ipynb" target="_blank" rel="noopener">analysis notebook</a>,
+    Step 5.</p>
+    """
+
     page = PAGE_TEMPLATE.format(
         about_html=about_html,
+        limitations_html=limitations_html,
         center_json=json.dumps(CENTER),
         station_count=station_count,
         mean_change=mean_change,

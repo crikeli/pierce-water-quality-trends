@@ -1,0 +1,20 @@
+{
+  "significance": {
+    "wqi_2024": {
+      "r": -0.023,
+      "p": 0.864,
+      "n": 59,
+      "ci_low": -0.277,
+      "ci_high": 0.235
+    },
+    "wqi_change": {
+      "r": -0.124,
+      "p": 0.35,
+      "n": 59,
+      "ci_low": -0.368,
+      "ci_high": 0.137
+    }
+  },
+  "min_detectable_r": 0.358,
+  "n_power": 59
+}
